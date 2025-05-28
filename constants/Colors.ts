@@ -1,26 +1,34 @@
-/**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
- */
+// A comprehensive color system for the WOW app
 
-const tintColorLight = '#0a7ea4';
-const tintColorDark = '#fff';
-
-export const Colors = {
-  light: {
-    text: '#11181C',
-    background: '#fff',
-    tint: tintColorLight,
-    icon: '#687076',
-    tabIconDefault: '#687076',
-    tabIconSelected: tintColorLight,
-  },
-  dark: {
-    text: '#ECEDEE',
-    background: '#151718',
-    tint: tintColorDark,
-    icon: '#9BA1A6',
-    tabIconDefault: '#9BA1A6',
-    tabIconSelected: tintColorDark,
-  },
+const Colors = {
+  // Primary colors
+  primary: '#002B5B', // Deep navy blue
+  primaryLight: '#E6EBF2', // Light shade of primary
+  primary20: 'rgba(0, 43, 91, 0.2)', // 20% opacity primary for backgrounds
+  
+  // Accent colors
+  accent: '#F39C12', // Gold/amber for accent elements
+  accentLight: '#FDF3E0', // Light shade of accent
+  
+  // Status colors
+  success: '#27AE60', // Green for success states
+  successLight: '#E6F7EF', // Light shade of success
+  warning: '#F39C12', // Amber for warnings
+  warningLight: '#FDF3E0', // Light shade of warning
+  error: '#E74C3C', // Red for errors/alerts
+  errorLight: '#FDECEA', // Light shade of error
+  
+  // Neutral colors
+  white: '#FFFFFF',
+  background: '#F5F7FA',
+  lightGray: '#E5E7EB',
+  gray: '#9CA3AF',
+  border: '#D1D5DB',
+  
+  // Text colors
+  textPrimary: '#1F2937',
+  textSecondary: '#4B5563',
+  textTertiary: '#9CA3AF',
 };
+
+export default Colors;

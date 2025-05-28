@@ -33,7 +33,11 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-font",
+      "expo-web-browser",
+      "react-native-ble-manager",
+      "react-native-ble-plx"
     ],
     "experiments": {
       "typedRoutes": true
