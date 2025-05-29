@@ -1,9 +1,9 @@
-import React, { useEffect } from 'react';
-import { TouchableOpacity, Text, StyleSheet, View } from 'react-native';
-import { router } from 'expo-router';
-import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withSequence, withTiming, Easing } from 'react-native-reanimated';
-import { TriangleAlert as AlertTriangle } from 'lucide-react-native';
 import Colors from '@/constants/Colors';
+import { router } from 'expo-router';
+import { TriangleAlert as AlertTriangle } from 'lucide-react-native';
+import React, { useEffect } from 'react';
+import { StyleSheet, Text, TouchableOpacity } from 'react-native';
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 
 export default function EmergencyButton() {
   const pulseAnim = useSharedValue(1);
@@ -51,9 +51,12 @@ const styles = StyleSheet.create({
     bottom: 24,
     right: 24,
     shadowColor: Colors.error,
-    shadowOffset: {
-      width: 0,
-      height: 4,
+    // Fix: shadowOffset should be applied through style prop in Animated.View
+    style: {
+      shadowOffset: {
+        width: 0,
+        height: 4,
+      },
     },
     shadowOpacity: 0.3,
     shadowRadius: 8,

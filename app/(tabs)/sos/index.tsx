@@ -6,7 +6,7 @@ import { Battery, Bluetooth, RefreshCw } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, PermissionsAndroid, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { BleManager, Device } from 'react-native-ble-plx';
-import Animated, { useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // We'll create the BLE manager instance inside the component to ensure it's only initialized when needed
@@ -27,12 +27,25 @@ function SOSScreen() {
   } | null>(null);
   const [logs, setLogs] = useState<Array<{ timestamp: string; message: string }>>([]);
   
-  const pulseAnim = useSharedValue(1);
+  // Store references to BLE subscriptions for proper cleanup
+  const subscriptionsRef = useRef<any[]>([]);
   
-  // Animation for connected status
+  // Use a stable indicator instead of animation
+  const connectionIndicator = useSharedValue(0);
+  
+  // Style for connected status - using a subtle border glow instead of scaling
   const animatedStyle = useAnimatedStyle(() => {
     return {
-      transform: [{ scale: pulseAnim.value }],
+      borderColor: Colors.success,
+      borderWidth: 2,
+      shadowColor: Colors.success,
+      // Fix: Properly nest shadowOffset in the style object
+      style: {
+        shadowOffset: { width: 0, height: 0 },
+      },
+      shadowOpacity: connectionIndicator.value,
+      shadowRadius: 8,
+      elevation: 4 * connectionIndicator.value,
     };
   });
 
@@ -61,10 +74,27 @@ function SOSScreen() {
     
     // Clean up on unmount
     return () => {
+      // Clean up all BLE subscriptions first
+      if (subscriptionsRef.current.length > 0) {
+        console.log(`Cleaning up ${subscriptionsRef.current.length} BLE subscriptions on unmount`);
+        subscriptionsRef.current.forEach(subscription => {
+          try {
+            if (subscription && typeof subscription.remove === 'function') {
+              subscription.remove();
+            }
+          } catch (subError) {
+            console.warn('Error removing subscription on unmount:', subError);
+          }
+        });
+        subscriptionsRef.current = [];
+      }
+      
+      // Then disconnect from device if connected
       if (connectedDevice) {
         disconnectFromDevice();
       }
       
+      // Finally destroy the BLE manager
       if (managerRef.current) {
         managerRef.current.destroy();
         managerRef.current = null;
@@ -72,20 +102,73 @@ function SOSScreen() {
     };
   }, []);
 
-  // Start animation when connected
+  // Set connection indicator when connected
   useEffect(() => {
     if (connectedDevice) {
-      pulseAnim.value = withRepeat(
-        withSequence(
-          withTiming(1.2, { duration: 1000 }),
-          withTiming(1, { duration: 1000 })
-        ),
-        -1, // Infinite repeat
-        true // Reverse
-      );
+      // Smoothly fade in the border glow effect
+      connectionIndicator.value = withTiming(0.7, { duration: 800 });
     } else {
-      pulseAnim.value = 1;
+      // Fade out when disconnected
+      connectionIndicator.value = withTiming(0, { duration: 500 });
     }
+  }, [connectedDevice]);
+  
+  // Monitor connection state to detect unexpected disconnections
+  useEffect(() => {
+    if (!connectedDevice) return;
+    
+    let isUnmounted = false;
+    let connectionCheckInterval: ReturnType<typeof setInterval>;
+    
+    // Set up periodic connection check
+    connectionCheckInterval = setInterval(async () => {
+      if (isUnmounted || !connectedDevice) return;
+      
+      try {
+        const isConnected = await connectedDevice.isConnected();
+        if (!isConnected && !isUnmounted) {
+          // Device was unexpectedly disconnected
+          addLog('Device unexpectedly disconnected');
+          
+          // Clear device state and cached devices list
+          setConnectedDevice(null);
+          setBatteryLevel(null);
+          setAlertMessage('');
+          setDevices([]); // Clear the cached devices list
+          
+          // Show popup notification
+          Alert.alert(
+            'Device Disconnected',
+            'The SOS device has been disconnected. This may happen if the device was powered off or moved out of range.',
+            [{ text: 'OK' }]
+          );
+        }
+      } catch (error) {
+        console.error('Error checking connection status:', error);
+        // If we can't check connection status, assume disconnected
+        if (!isUnmounted) {
+          addLog(`Connection check error: ${error.message}`);
+          setConnectedDevice(null);
+          setBatteryLevel(null);
+          setAlertMessage('');
+          setDevices([]); // Clear the cached devices list
+          
+          Alert.alert(
+            'Connection Lost',
+            'Lost connection to the SOS device. Please check if the device is powered on and in range.',
+            [{ text: 'OK' }]
+          );
+        }
+      }
+    }, 5000); // Check every 5 seconds
+    
+    // Clean up interval on unmount or when device changes
+    return () => {
+      isUnmounted = true;
+      if (connectionCheckInterval) {
+        clearInterval(connectionCheckInterval);
+      }
+    };
   }, [connectedDevice]);
 
   // Request necessary permissions for BLE
@@ -278,6 +361,28 @@ function SOSScreen() {
             if (error) {
               console.error('Battery monitoring error:', error);
               addLog(`Battery monitoring error: ${error.message}`);
+              
+              // Check if the error indicates the device was disconnected
+              if (error.message && error.message.includes('disconnected')) {
+                // Device was disconnected during monitoring
+                if (connectedDevice && connectedDevice.id === connected.id) {
+                  // Only handle if this is still our current connected device
+                  setConnectedDevice(null);
+                  setBatteryLevel(null);
+                  setAlertMessage('');
+                  setDevices([]); // Clear the devices list
+                  
+                  // Show popup notification
+                  Alert.alert(
+                    'Device Disconnected',
+                    'The SOS device has been disconnected during monitoring. This may happen if the device was powered off or moved out of range.',
+                    [{ text: 'OK' }]
+                  );
+                }
+              } else if (error.message && error.message.includes('cancelled')) {
+                // This is an expected error when we disconnect properly
+                addLog('Battery monitoring cancelled (expected during disconnect)');
+              }
               return;
             }
             
@@ -314,10 +419,14 @@ function SOSScreen() {
           }
         );
         
+        // Store the battery monitor subscription for proper cleanup
+        subscriptionsRef.current.push(batteryMonitor);
+        addLog('Battery monitoring subscription stored for cleanup');
+        
         // Also try a custom SOS service if available (for devices specifically designed for this app)
         // This is a made-up UUID that a real SOS device might use
         try {
-          connected.monitorCharacteristicForService(
+          const sosMonitor = connected.monitorCharacteristicForService(
             '00000001-0000-1000-8000-00805f9b34fb', // Custom SOS Service
             '00000002-0000-1000-8000-00805f9b34fb', // SOS Button Characteristic
             (error, characteristic) => {
@@ -360,6 +469,9 @@ function SOSScreen() {
               }
             }
           );
+          
+          // Store the SOS monitor subscription for proper cleanup
+          subscriptionsRef.current.push(sosMonitor);
           addLog('Monitoring SOS button service');
         } catch (sosMonitorError) {
           // This is expected to fail on devices that don't have this service
@@ -381,6 +493,51 @@ function SOSScreen() {
       console.error('Connection error:', error);
       addLog(`Connection error: ${error.message}`);
       
+      // Check for specific error types
+      const errorMessage = error.message || '';
+      
+      // Handle "already connected" error specifically
+      if (errorMessage.includes('already connected')) {
+        // Device is already connected but our state doesn't reflect it
+        // This can happen if the app lost track of the connection state
+        
+        // First try to disconnect
+        try {
+          await device.cancelConnection();
+          addLog('Disconnected from device that was already connected');
+        } catch (disconnectError) {
+          console.warn('Error disconnecting from already connected device:', disconnectError);
+        }
+        
+        // Clear state
+        setConnectedDevice(null);
+        setBatteryLevel(null);
+        setAlertMessage('');
+        
+        // Clear the devices list to force a fresh scan
+        setDevices([]);
+        
+        Alert.alert(
+          'Connection Issue',
+          'The device appears to be in an inconsistent state. Please try scanning again.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      
+      // Handle "operation cancelled" error
+      if (errorMessage.includes('cancelled')) {
+        // This usually happens when the device disconnects during connection attempt
+        Alert.alert(
+          'Connection Cancelled',
+          'The connection was cancelled. The device may have been turned off or moved out of range.',
+          [{ text: 'OK' }]
+        );
+      } else {
+        // Generic error handling
+        Alert.alert('Connection Failed', error.message);
+      }
+      
       // Make sure we clean up any partial connection
       if (connectedDevice) {
         try {
@@ -391,7 +548,8 @@ function SOSScreen() {
         setConnectedDevice(null);
       }
       
-      Alert.alert('Connection Failed', error.message);
+      // Clear the devices list to force a fresh scan
+      setDevices([]);
     }
   };
 
@@ -404,10 +562,27 @@ function SOSScreen() {
         // Create a local reference to the device to avoid race conditions
         const deviceToDisconnect = connectedDevice;
         
-        // Reset state variables first to update UI immediately
+        // First, clean up all BLE subscriptions to prevent "Operation was cancelled" errors
+        if (subscriptionsRef.current.length > 0) {
+          addLog(`Cleaning up ${subscriptionsRef.current.length} BLE subscriptions`);
+          subscriptionsRef.current.forEach(subscription => {
+            try {
+              if (subscription && typeof subscription.remove === 'function') {
+                subscription.remove();
+              }
+            } catch (subError) {
+              console.warn('Error removing subscription:', subError);
+            }
+          });
+          // Clear the subscriptions array
+          subscriptionsRef.current = [];
+        }
+        
+        // Reset state variables to update UI immediately
         setConnectedDevice(null);
         setBatteryLevel(null);
         setAlertMessage('');
+        setDevices([]); // Clear the devices list to force a fresh scan
         
         // Check if the device is still connected before trying to disconnect
         try {
@@ -571,44 +746,47 @@ function SOSScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Calming header with softer colors */}
       <View style={styles.header}>
-        <Text style={styles.title}>SOS Device Connection</Text>
+        <Text style={styles.title}>Emergency Connect</Text>
         <View style={[
           styles.statusIndicator, 
-          { backgroundColor: connectedDevice ? Colors.success : Colors.error }
+          { backgroundColor: connectedDevice ? Colors.successLight : Colors.background }
         ]}>
-          <Text style={styles.statusText}>
-            {connectedDevice ? 'Connected' : 'Disconnected'}
+          <Text style={[
+            styles.statusText,
+            { color: connectedDevice ? Colors.success : Colors.textSecondary }
+          ]}>
+            {connectedDevice ? 'Connected' : 'Ready to Connect'}
           </Text>
         </View>
       </View>
 
-      <View style={styles.deviceSection}>
-        <Text style={styles.sectionTitle}>BLE SOS Button</Text>
-        
+      {/* Main content area with more breathing space */}
+      <View style={styles.contentContainer}>
+        {/* Connected device state */}
         {connectedDevice ? (
           <Animated.View style={[styles.deviceInfoContainer, animatedStyle]}>
             <View style={styles.deviceHeader}>
-              <Bluetooth size={24} color={Colors.primary} />
-              <Text style={styles.deviceName}>{connectedDevice.name || 'SOS Device'}</Text>
+              <View style={styles.deviceIcon}>
+                <Bluetooth size={24} color={Colors.white} />
+              </View>
+              <View style={styles.deviceTitleContainer}>
+                <Text style={styles.deviceName}>{connectedDevice.name || 'SOS Device'}</Text>
+                <Text style={styles.deviceStatus}>Ready for emergencies</Text>
+              </View>
             </View>
             
             <View style={styles.deviceDetails}>
-              <View style={styles.deviceDetail}>
-                <Text style={styles.deviceDetailLabel}>Device ID:</Text>
-                <Text style={styles.deviceDetailValue}>{connectedDevice.id}</Text>
-              </View>
-              
               {batteryLevel !== null && (
-                <View style={styles.deviceDetail}>
-                  <Text style={styles.deviceDetailLabel}>Battery:</Text>
-                  <View style={styles.batteryContainer}>
-                    <Battery size={16} color={
-                      batteryLevel > 50 ? Colors.success : 
-                      batteryLevel > 20 ? Colors.warning : Colors.error
-                    } />
-                    <Text style={styles.deviceDetailValue}>{batteryLevel}%</Text>
-                  </View>
+                <View style={styles.batteryCard}>
+                  <Battery size={20} color={
+                    batteryLevel > 50 ? Colors.success : 
+                    batteryLevel > 20 ? Colors.warning : Colors.error
+                  } />
+                  <Text style={styles.batteryText}>
+                    Battery: <Text style={{fontFamily: 'Inter-Medium'}}>{batteryLevel}%</Text>
+                  </Text>
                 </View>
               )}
               
@@ -619,29 +797,70 @@ function SOSScreen() {
               )}
             </View>
             
+            {/* Emergency instructions card */}
+            <View style={styles.instructionsCard}>
+              <Text style={styles.instructionsTitle}>Emergency Button Guide</Text>
+              <View style={styles.instructionsList}>
+                <View style={styles.instructionItem}>
+                  <View style={[styles.instructionDot, {backgroundColor: Colors.error}]} />
+                  <Text style={styles.instructionText}>Press <Text style={{fontWeight: 'bold'}}>once</Text> for Police (100)</Text>
+                </View>
+                <View style={styles.instructionItem}>
+                  <View style={[styles.instructionDot, {backgroundColor: Colors.warning}]} />
+                  <Text style={styles.instructionText}>Press <Text style={{fontWeight: 'bold'}}>twice</Text> for Medical (108)</Text>
+                </View>
+                <View style={styles.instructionItem}>
+                  <View style={[styles.instructionDot, {backgroundColor: Colors.primary}]} />
+                  <Text style={styles.instructionText}>Press <Text style={{fontWeight: 'bold'}}>three times</Text> for National Emergency (112)</Text>
+                </View>
+              </View>
+            </View>
+            
+            {/* Device ID shown in a less prominent way */}
+            <Text style={styles.deviceIdText}>Device ID: {connectedDevice.id}</Text>
+            
             <TouchableOpacity 
               style={styles.disconnectButton}
               onPress={disconnectFromDevice}
             >
-              <Text style={styles.disconnectText}>Disconnect Device</Text>
+              <Text style={styles.disconnectText}>Disconnect</Text>
             </TouchableOpacity>
           </Animated.View>
         ) : (
-          <View style={styles.noDeviceContainer}>
-            <Text style={styles.instruction}>
-              Connect to a physical SOS button device via Bluetooth to enable emergency alerts.
-            </Text>
-            
-            <View style={styles.pressInstructions}>
-              <Text style={styles.pressInstruction}>• Press 1x: Police (100)</Text>
-              <Text style={styles.pressInstruction}>• Press 2x: Medical (108)</Text>
-              <Text style={styles.pressInstruction}>• Press 3x: National Emergency (112)</Text>
+          /* Not connected state */
+          <View style={styles.notConnectedContainer}>
+            {/* Calming illustration/message */}
+            <View style={styles.welcomeCard}>
+              <Text style={styles.welcomeTitle}>SOS Emergency Device</Text>
+              <Text style={styles.welcomeText}>
+                Connect your emergency button to send alerts quickly in critical situations.
+              </Text>
             </View>
             
+            {/* Emergency instructions */}
+            <View style={styles.instructionsCard}>
+              <Text style={styles.instructionsTitle}>Emergency Button Guide</Text>
+              <View style={styles.instructionsList}>
+                <View style={styles.instructionItem}>
+                  <View style={[styles.instructionDot, {backgroundColor: Colors.error}]} />
+                  <Text style={styles.instructionText}>Press <Text style={{fontWeight: 'bold'}}>once</Text> for Police (100)</Text>
+                </View>
+                <View style={styles.instructionItem}>
+                  <View style={[styles.instructionDot, {backgroundColor: Colors.warning}]} />
+                  <Text style={styles.instructionText}>Press <Text style={{fontWeight: 'bold'}}>twice</Text> for Medical (108)</Text>
+                </View>
+                <View style={styles.instructionItem}>
+                  <View style={[styles.instructionDot, {backgroundColor: Colors.primary}]} />
+                  <Text style={styles.instructionText}>Press <Text style={{fontWeight: 'bold'}}>three times</Text> for National Emergency (112)</Text>
+                </View>
+              </View>
+            </View>
+            
+            {/* Scanning state */}
             {isScanning ? (
               <View style={styles.scanningContainer}>
                 <ActivityIndicator size="large" color={Colors.primary} />
-                <Text style={styles.scanningText}>Scanning for devices...</Text>
+                <Text style={styles.scanningText}>Looking for devices...</Text>
               </View>
             ) : (
               <TouchableOpacity 
@@ -650,21 +869,27 @@ function SOSScreen() {
                 disabled={isScanning}
               >
                 <RefreshCw size={20} color={Colors.white} />
-                <Text style={styles.scanButtonText}>Scan for SOS Devices</Text>
+                <Text style={styles.scanButtonText}>Find SOS Device</Text>
               </TouchableOpacity>
             )}
             
+            {/* Available devices list with cleaner design */}
             {devices.length > 0 && (
               <View style={styles.deviceList}>
-                <Text style={styles.deviceListTitle}>Available Devices:</Text>
+                <Text style={styles.deviceListTitle}>Available Devices</Text>
                 <FlatList
                   data={devices}
                   keyExtractor={(item) => item.id}
                   renderItem={({ item }) => (
                     <View style={styles.deviceItem}>
                       <View style={styles.deviceItemInfo}>
-                        <Text style={styles.deviceItemName}>{item.name || 'Unnamed Device'}</Text>
-                        <Text style={styles.deviceItemId}>ID: {item.id}</Text>
+                        <View style={styles.deviceItemIcon}>
+                          <Bluetooth size={16} color={Colors.white} />
+                        </View>
+                        <View>
+                          <Text style={styles.deviceItemName}>{item.name || 'Unnamed Device'}</Text>
+                          <Text style={styles.deviceItemId}>{item.id.substring(0, 8)}...</Text>
+                        </View>
                       </View>
                       <TouchableOpacity
                         style={styles.connectButton}
@@ -682,16 +907,23 @@ function SOSScreen() {
         )}
       </View>
       
+      {/* Last button press notification with calmer design */}
       {lastButtonPress && (
         <View style={styles.lastActionContainer}>
-          <Text style={styles.lastActionTitle}>Last Button Press</Text>
-          <Text style={styles.lastActionText}>
-            Pressed {lastButtonPress.pressCount} time(s) at {new Date(lastButtonPress.timestamp).toLocaleTimeString()}
-          </Text>
+          <View style={styles.lastActionIcon}>
+            <Text style={styles.lastActionCount}>{lastButtonPress.pressCount}</Text>
+          </View>
+          <View style={styles.lastActionInfo}>
+            <Text style={styles.lastActionTitle}>Last Emergency Signal</Text>
+            <Text style={styles.lastActionText}>
+              {new Date(lastButtonPress.timestamp).toLocaleTimeString()} • {
+                lastButtonPress.pressCount === 1 ? 'Police' :
+                lastButtonPress.pressCount === 2 ? 'Medical' : 'National Emergency'
+              }
+            </Text>
+          </View>
         </View>
       )}
-
-
     </SafeAreaView>
   );
 }
@@ -699,10 +931,13 @@ function SOSScreen() {
 export default SOSScreen;
 
 const styles = StyleSheet.create({
+  // Base container
   container: {
     flex: 1,
     backgroundColor: Colors.background,
   },
+  
+  // Header styles - more calming and less clinical
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -711,181 +946,231 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.white,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+    elevation: 2,
   },
   title: {
-    fontSize: 20,
+    fontSize: 22,
     fontFamily: 'Inter-Bold',
     color: Colors.primary,
   },
   statusIndicator: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   statusText: {
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: 'Inter-Medium',
-    color: Colors.white,
   },
-  deviceSection: {
+  
+  // Main content container
+  contentContainer: {
+    flex: 1,
     padding: 16,
+  },
+  
+  // Connected device styles - more visually appealing
+  deviceInfoContainer: {
     backgroundColor: Colors.white,
-    margin: 16,
-    borderRadius: 12,
+    borderRadius: 16,
+    padding: 20,
     borderWidth: 1,
+    // Default border color - will be overridden by animatedStyle when connected
     borderColor: Colors.border,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontFamily: 'Inter-Bold',
-    color: Colors.textPrimary,
-    marginBottom: 16,
-  },
-  deviceInfoContainer: {
-    backgroundColor: Colors.background,
-    borderRadius: 8,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    // Fix: Properly nest shadowOffset in the style object for Animated.View
+    style: {
+      shadowOffset: { width: 0, height: 2 },
+    },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
   deviceHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 20,
+  },
+  deviceIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  deviceTitleContainer: {
+    flex: 1,
   },
   deviceName: {
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: 'Inter-Bold',
-    color: Colors.primary,
-    marginLeft: 8,
+    color: Colors.textPrimary,
+    marginBottom: 4,
+  },
+  deviceStatus: {
+    fontSize: 14,
+    fontFamily: 'Inter-Regular',
+    color: Colors.success,
   },
   deviceDetails: {
-    marginBottom: 16,
+    marginBottom: 20,
   },
-  deviceDetail: {
+  batteryCard: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: Colors.background,
+    padding: 12,
+    borderRadius: 12,
     marginBottom: 8,
   },
-  deviceDetailLabel: {
-    fontFamily: 'Inter-Medium',
-    color: Colors.textSecondary,
-  },
-  deviceDetailValue: {
+  batteryText: {
     fontFamily: 'Inter-Regular',
     color: Colors.textPrimary,
+    marginLeft: 8,
+    fontSize: 14,
   },
-  batteryContainer: {
+  deviceIdText: {
+    fontFamily: 'Inter-Regular',
+    fontSize: 12,
+    color: Colors.textTertiary,
+    textAlign: 'center',
+    marginVertical: 16,
+  },
+  
+  // Instructions card - clear and calming
+  instructionsCard: {
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+  },
+  instructionsTitle: {
+    fontFamily: 'Inter-Bold',
+    fontSize: 16,
+    color: Colors.textPrimary,
+    marginBottom: 12,
+  },
+  instructionsList: {
+    marginTop: 8,
+  },
+  instructionItem: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 12,
   },
-  disconnectButton: {
-    backgroundColor: Colors.error,
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: 'center',
+  instructionDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginRight: 12,
   },
-  disconnectText: {
-    fontFamily: 'Inter-Medium',
-    color: Colors.white,
-  },
-  noDeviceContainer: {
-    alignItems: 'center',
-    padding: 16,
-  },
-  instruction: {
-    fontSize: 16,
+  instructionText: {
     fontFamily: 'Inter-Regular',
+    fontSize: 14,
+    color: Colors.textPrimary,
+    flex: 1,
+  },
+  
+  // Not connected state
+  notConnectedContainer: {
+    alignItems: 'center',
+  },
+  welcomeCard: {
+    backgroundColor: Colors.white,
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    width: '100%',
+    alignItems: 'center',
+    shadowColor: '#000',
+    // Fix: Properly nest shadowOffset in the style object
+    style: {
+      shadowOffset: { width: 0, height: 2 },
+    },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  welcomeTitle: {
+    fontFamily: 'Inter-Bold',
+    fontSize: 20,
+    color: Colors.primary,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  welcomeText: {
+    fontFamily: 'Inter-Regular',
+    fontSize: 15,
     color: Colors.textPrimary,
     textAlign: 'center',
-    marginBottom: 16,
+    lineHeight: 22,
   },
-  pressInstructions: {
-    marginBottom: 24,
-    alignSelf: 'flex-start',
-  },
-  pressInstruction: {
-    fontFamily: 'Inter-Regular',
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
+  
+  // Scanning state
   scanningContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
+    padding: 20,
+    marginTop: 8,
   },
   scanningText: {
     fontFamily: 'Inter-Medium',
     color: Colors.primary,
-    marginTop: 8,
+    marginTop: 12,
+    fontSize: 15,
   },
+  
+  // Scan button - more inviting
   scanButton: {
     backgroundColor: Colors.primary,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    marginTop: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 30,
+    marginTop: 16,
+    shadowColor: '#000',
+    // Fix: Properly nest shadowOffset in the style object
+    style: {
+      shadowOffset: { width: 0, height: 2 },
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   scanButtonText: {
     fontFamily: 'Inter-Medium',
     color: Colors.white,
-    marginLeft: 8,
+    marginLeft: 10,
+    fontSize: 16,
   },
-  lastActionContainer: {
-    backgroundColor: Colors.primaryLight,
-    margin: 16,
-    marginTop: 0,
-    padding: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-  },
-  lastActionTitle: {
-    fontFamily: 'Inter-Bold',
-    color: Colors.primary,
-    marginBottom: 4,
-  },
-  lastActionText: {
-    fontFamily: 'Inter-Medium',
-    color: Colors.textPrimary,
-  },
-
-  reconnectButton: {
-    backgroundColor: Colors.primary,
-    marginHorizontal: 16,
-    marginBottom: 16,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  reconnectText: {
-    fontFamily: 'Inter-Medium',
-    color: Colors.white,
-  },
-  // New styles for BLE device list
+  
+  // Device list - cleaner and more organized
   deviceList: {
-    marginTop: 16,
+    marginTop: 24,
     width: '100%',
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    paddingTop: 16,
+    backgroundColor: Colors.white,
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
   deviceListTitle: {
     fontFamily: 'Inter-Bold',
     fontSize: 16,
     color: Colors.textPrimary,
-    marginBottom: 8,
+    marginBottom: 12,
   },
   flatList: {
-    maxHeight: 200,
+    maxHeight: 220,
   },
   deviceItem: {
     flexDirection: 'row',
@@ -897,39 +1182,113 @@ const styles = StyleSheet.create({
   },
   deviceItemInfo: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  deviceItemIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
   },
   deviceItemName: {
     fontFamily: 'Inter-Medium',
-    fontSize: 14,
+    fontSize: 15,
     color: Colors.textPrimary,
   },
   deviceItemId: {
     fontFamily: 'Inter-Regular',
     fontSize: 12,
-    color: Colors.textSecondary,
+    color: Colors.textTertiary,
   },
+  
+  // Connect/disconnect buttons
   connectButton: {
     backgroundColor: Colors.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
   },
   connectButtonText: {
     fontFamily: 'Inter-Medium',
-    fontSize: 12,
+    fontSize: 14,
     color: Colors.white,
   },
-  // Alert message container
+  disconnectButton: {
+    backgroundColor: Colors.white,
+    paddingVertical: 12,
+    borderRadius: 30,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.error,
+  },
+  disconnectText: {
+    fontFamily: 'Inter-Medium',
+    color: Colors.error,
+    fontSize: 15,
+  },
+  
+  // Alert message - less alarming but still noticeable
   alertMessageContainer: {
     marginTop: 8,
-    padding: 8,
+    marginBottom: 16,
+    padding: 12,
     backgroundColor: Colors.errorLight,
-    borderRadius: 6,
+    borderRadius: 12,
     borderLeftWidth: 4,
     borderLeftColor: Colors.error,
   },
   alertMessageText: {
     fontFamily: 'Inter-Medium',
     color: Colors.error,
+    fontSize: 14,
+  },
+  
+  // Last action container - more informative and calming
+  lastActionContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.white,
+    margin: 16,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  lastActionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+  },
+  lastActionCount: {
+    fontFamily: 'Inter-Bold',
+    fontSize: 18,
+    color: Colors.primary,
+  },
+  lastActionInfo: {
+    flex: 1,
+  },
+  lastActionTitle: {
+    fontFamily: 'Inter-Bold',
+    fontSize: 15,
+    color: Colors.textPrimary,
+    marginBottom: 4,
+  },
+  lastActionText: {
+    fontFamily: 'Inter-Regular',
+    fontSize: 13,
+    color: Colors.textSecondary,
   },
 });
