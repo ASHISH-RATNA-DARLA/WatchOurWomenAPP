@@ -9,20 +9,22 @@ import { BleManager, Device } from 'react-native-ble-plx';
 import Animated, { useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-// We'll create the BLE manager instance inside the component to ensure it's only initialized when needed
+// BLE Service and Characteristic UUIDs - ALIGNED WITH YOUR BLE DEVICE
+const SERVICE_UUID = '0000180F-0000-1000-8000-00805f9b34fb';        // Battery Service
+const CHARACTERISTIC_UUID = '00002A19-0000-1000-8000-00805f9b34fb';  // Battery Level Characteristic
 
 function SOSScreen() {
   // Create BLE manager with useRef to ensure it's only created once
   const managerRef = useRef<BleManager | null>(null);
   
-  // Initialize other state variables
+  // Initialize state variables
   const [isScanning, setIsScanning] = useState(false);
   const [devices, setDevices] = useState<Device[]>([]);
   const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
   const [alertMessage, setAlertMessage] = useState('');
-  const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
   const [lastButtonPress, setLastButtonPress] = useState<{
     pressCount: number;
+    emergencyCode: string;
     timestamp: string;
   } | null>(null);
   const [logs, setLogs] = useState<Array<{ timestamp: string; message: string }>>([]);
@@ -38,10 +40,8 @@ function SOSScreen() {
 
   // Initialize BLE manager and request permissions on mount
   useEffect(() => {
-    // Create BLE manager instance - using a more reliable initialization approach
     if (!managerRef.current) {
       try {
-        // Import the BleManager dynamically to ensure it's fully loaded
         const BleManagerModule = require('react-native-ble-plx').BleManager;
         managerRef.current = new BleManagerModule();
         addLog('BLE manager initialized successfully');
@@ -56,7 +56,6 @@ function SOSScreen() {
       }
     }
     
-    // Request permissions
     requestPermissions();
     
     // Clean up on unmount
@@ -80,8 +79,8 @@ function SOSScreen() {
           withTiming(1.2, { duration: 1000 }),
           withTiming(1, { duration: 1000 })
         ),
-        -1, // Infinite repeat
-        true // Reverse
+        -1,
+        true
       );
     } else {
       pulseAnim.value = 1;
@@ -121,9 +120,7 @@ function SOSScreen() {
   // Start scanning for BLE devices
   const startScan = async () => {
     try {
-      // Check if BLE manager is initialized
       if (!managerRef.current) {
-        // Try to initialize BLE manager again if it failed the first time
         try {
           const BleManagerModule = require('react-native-ble-plx').BleManager;
           managerRef.current = new BleManagerModule();
@@ -153,7 +150,7 @@ function SOSScreen() {
       
       setDevices([]);
       setIsScanning(true);
-      addLog('Scanning for BLE devices...');
+      addLog('Scanning for SOS devices...');
       
       managerRef.current.startDeviceScan(null, null, (error, device) => {
         if (error) {
@@ -164,12 +161,11 @@ function SOSScreen() {
           return;
         }
         
-        // Filter for devices with names containing "SOS" or "XIAO_SOS"
-        // You can adjust this filter based on your actual device name
+        // Filter for devices with names containing "SOS" or "XIAO_SOS" (matching your BLE device name)
         if (device?.name && (device.name.includes('SOS') || device.name.includes('XIAO_SOS'))) {
           setDevices(prev => {
             if (!prev.find(d => d.id === device.id)) {
-              addLog(`Found device: ${device.name || 'Unnamed'} (${device.id})`);
+              addLog(`Found SOS device: ${device.name} (${device.id})`);
               return [...prev, device];
             }
             return prev;
@@ -177,7 +173,7 @@ function SOSScreen() {
         }
       });
       
-      // Stop scan after 15 seconds (increased from 10 to give more time to find devices)
+      // Stop scan after 15 seconds
       setTimeout(() => {
         if (managerRef.current) {
           managerRef.current.stopDeviceScan();
@@ -185,12 +181,11 @@ function SOSScreen() {
         setIsScanning(false);
         addLog('Scan completed');
         
-        // If no devices found, show message
         if (devices.length === 0) {
           addLog('No SOS devices found');
           Alert.alert(
             'No Devices', 
-            'No SOS devices were found. Please make sure your device is powered on and in range.',
+            'No SOS devices were found. Please make sure your XIAO_SOS device is powered on and in range.',
             [{ text: 'OK' }]
           );
         }
@@ -205,14 +200,12 @@ function SOSScreen() {
   // Connect to a BLE device
   const connectToDevice = async (device: Device) => {
     try {
-      // Check if BLE manager is initialized
       if (!managerRef.current) {
         addLog('BLE manager not initialized');
         Alert.alert('BLE Error', 'Bluetooth manager is not initialized. Please restart the app.');
         return;
       }
       
-      // Check if device is already connected
       if (connectedDevice && connectedDevice.id === device.id) {
         addLog(`Already connected to ${device.name || 'device'}`);
         Alert.alert('Already Connected', 'You are already connected to this device.');
@@ -236,152 +229,89 @@ function SOSScreen() {
       const connected = await Promise.race([connectPromise, timeoutPromise]) as Device;
       addLog('Device connected, discovering services...');
       
-      // Discover services and characteristics with timeout
+      // Discover services and characteristics
       const discoverPromise = connected.discoverAllServicesAndCharacteristics();
       const discoverTimeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Service discovery timeout')), 15000)
       );
       
       await Promise.race([discoverPromise, discoverTimeoutPromise]);
-      addLog('Services discovered');
+      addLog('Services discovered successfully');
       
       // Set the connected device
       setConnectedDevice(connected);
       
+      // Set up monitoring for the exact service and characteristic used by your BLE device
       try {
-        // First, try to read the battery level to check if the service is available
-        try {
-          const batteryCharacteristic = await connected.readCharacteristicForService(
-            '0000180F-0000-1000-8000-00805f9b34fb', // Battery Service
-            '00002A19-0000-1000-8000-00805f9b34fb'  // Battery Level
-          );
-          
-          if (batteryCharacteristic?.value) {
-            const initialBatteryValue = Buffer.from(batteryCharacteristic.value, 'base64')[0];
-            setBatteryLevel(initialBatteryValue);
-            addLog(`Initial battery level: ${initialBatteryValue}%`);
-          }
-        } catch (readError) {
-          // If reading fails, the service might not be available
-          console.warn('Could not read battery level:', readError);
-          addLog('Battery service not available, will try alternative services');
-        }
+        addLog(`Monitoring characteristic: ${CHARACTERISTIC_UUID} on service: ${SERVICE_UUID}`);
         
-        // Set up monitoring for button presses
-        // Try multiple service/characteristic combinations to increase compatibility
-        
-        // First try the standard Battery service
-        const batteryMonitor = connected.monitorCharacteristicForService(
-          '0000180F-0000-1000-8000-00805f9b34fb', // Battery Service
-          '00002A19-0000-1000-8000-00805f9b34fb', // Battery Level
+        connected.monitorCharacteristicForService(
+          SERVICE_UUID,
+          CHARACTERISTIC_UUID,
           (error, characteristic) => {
             if (error) {
-              console.error('Battery monitoring error:', error);
-              addLog(`Battery monitoring error: ${error.message}`);
+              console.error('Monitoring error:', error);
+              addLog(`Monitoring error: ${error.message}`);
               return;
             }
             
             if (characteristic?.value) {
               try {
-                // First try to decode as a string (how the SOS device is sending data)
+                // Decode the characteristic value as a string (matching your BLE device's format)
                 const decodedString = Buffer.from(characteristic.value, 'base64').toString('ascii');
-                addLog(`Received value: ${decodedString}`);
+                addLog(`Received emergency code: ${decodedString}`);
                 
-                // Check if it's one of our emergency codes
-                if (decodedString === "100" || decodedString === "108" || decodedString === "112") {
-                  // Map the emergency codes to press counts
-                  let pressCount = 1; // Default
-                  if (decodedString === "108") pressCount = 2;
-                  if (decodedString === "112") pressCount = 3;
-                  
-                  handleButtonPress(pressCount);
-                  setAlertMessage(`⚠ Alert Received: ${decodedString} (${pressCount} press(es))`);
-                } else {
-                  // Fallback to the old method for backward compatibility
-                  const batteryValue = Buffer.from(characteristic.value, 'base64')[0];
-                  setBatteryLevel(batteryValue);
-                  
-                  if (batteryValue >= 1 && batteryValue <= 3) {
-                    handleButtonPress(batteryValue);
-                    setAlertMessage(`⚠ Alert Received: ${batteryValue} press(es) detected`);
-                  }
+                // Handle the specific emergency codes sent by your BLE device
+                switch (decodedString) {
+                  case "100":
+                    handleButtonPress(1, "100", "Police Emergency");
+                    break;
+                  case "108":
+                    handleButtonPress(2, "108", "Medical Emergency");
+                    break;
+                  case "112":
+                    handleButtonPress(3, "112", "National Emergency");
+                    break;
+                  case "Multiple Presses":
+                    handleButtonPress(4, "Multiple", "Multiple Button Presses");
+                    break;
+                  default:
+                    // Handle any other codes that might be sent
+                    addLog(`Unknown emergency code received: ${decodedString}`);
+                    handleButtonPress(0, decodedString, "Unknown Emergency");
                 }
               } catch (decodeError) {
-                console.error('Error decoding value:', decodeError);
-                addLog(`Error decoding data: ${decodeError.message}`);
+                console.error('Error decoding emergency code:', decodeError);
+                addLog(`Error decoding emergency data: ${decodeError.message}`);
               }
             }
           }
         );
         
-        // Also try a custom SOS service if available (for devices specifically designed for this app)
-        // This is a made-up UUID that a real SOS device might use
-        try {
-          connected.monitorCharacteristicForService(
-            '00000001-0000-1000-8000-00805f9b34fb', // Custom SOS Service
-            '00000002-0000-1000-8000-00805f9b34fb', // SOS Button Characteristic
-            (error, characteristic) => {
-              if (error) {
-                // Just log this error, don't alert as this is a fallback service
-                console.warn('SOS service monitoring error:', error);
-                return;
-              }
-              
-              if (characteristic?.value) {
-                try {
-                  // Decode the characteristic value as a string
-                  const decodedString = Buffer.from(characteristic.value, 'base64').toString('ascii');
-                  addLog(`SOS button value received: ${decodedString}`);
-                  
-                  // Check if it's one of our emergency codes
-                  if (decodedString === "100" || decodedString === "108" || decodedString === "112") {
-                    // Map the emergency codes to press counts
-                    let pressCount = 1; // Default
-                    if (decodedString === "108") pressCount = 2;
-                    if (decodedString === "112") pressCount = 3;
-                    
-                    handleButtonPress(pressCount);
-                    setAlertMessage(`⚠ Emergency Alert: ${decodedString} (${pressCount} press(es))`);
-                  } else {
-                    // Try to parse as a number if it's not one of our known codes
-                    const buttonValue = parseInt(decodedString, 10);
-                    if (!isNaN(buttonValue) && buttonValue >= 1 && buttonValue <= 3) {
-                      handleButtonPress(buttonValue);
-                      setAlertMessage(`⚠ Emergency Alert: ${buttonValue} press(es) detected`);
-                    } else {
-                      // Handle as a generic message
-                      addLog(`Received unknown SOS code: ${decodedString}`);
-                      setAlertMessage(`⚠ Emergency Alert: ${decodedString}`);
-                    }
-                  }
-                } catch (decodeError) {
-                  console.error('Error decoding SOS button value:', decodeError);
-                }
-              }
-            }
-          );
-          addLog('Monitoring SOS button service');
-        } catch (sosMonitorError) {
-          // This is expected to fail on devices that don't have this service
-          console.warn('SOS service not available:', sosMonitorError);
-        }
+        addLog('Successfully set up monitoring for SOS button presses');
+        
+        // Show success message
+        Alert.alert(
+          'Connected Successfully',
+          `Connected to ${device.name || 'SOS device'}. The device will now send emergency alerts when the physical button is pressed.\n\n• 1 press: Police (100)\n• 2 presses: Medical (108)\n• 3 presses: National Emergency (112)`,
+          [{ text: 'OK' }]
+        );
+        
       } catch (monitorError) {
         console.error('Error setting up monitoring:', monitorError);
         addLog(`Error setting up monitoring: ${monitorError.message}`);
-        // Continue even if monitoring setup fails
+        Alert.alert(
+          'Monitoring Error',
+          'Connected to device but failed to set up emergency monitoring. Please try reconnecting.',
+          [{ text: 'OK' }]
+        );
       }
       
-      // Show success message
-      Alert.alert(
-        'Connected',
-        `Connected to ${device.name || 'SOS device'}. The device will now send emergency alerts when the physical button is pressed.`,
-        [{ text: 'OK' }]
-      );
     } catch (error) {
       console.error('Connection error:', error);
       addLog(`Connection error: ${error.message}`);
       
-      // Make sure we clean up any partial connection
+      // Clean up any partial connection
       if (connectedDevice) {
         try {
           await connectedDevice.cancelConnection();
@@ -391,7 +321,7 @@ function SOSScreen() {
         setConnectedDevice(null);
       }
       
-      Alert.alert('Connection Failed', error.message);
+      Alert.alert('Connection Failed', `Failed to connect to ${device.name || 'SOS device'}.\n\n${error.message}`);
     }
   };
 
@@ -401,19 +331,17 @@ function SOSScreen() {
       try {
         addLog(`Disconnecting from ${connectedDevice.name || 'device'}...`);
         
-        // Create a local reference to the device to avoid race conditions
         const deviceToDisconnect = connectedDevice;
         
-        // Reset state variables first to update UI immediately
+        // Reset state variables first
         setConnectedDevice(null);
-        setBatteryLevel(null);
         setAlertMessage('');
+        setLastButtonPress(null);
         
         // Check if the device is still connected before trying to disconnect
         try {
           const isConnected = await deviceToDisconnect.isConnected();
           if (isConnected) {
-            // Set a timeout to ensure the disconnect operation doesn't hang
             const disconnectPromise = deviceToDisconnect.cancelConnection();
             const timeoutPromise = new Promise((_, reject) => 
               setTimeout(() => reject(new Error('Disconnect timeout')), 5000)
@@ -426,7 +354,6 @@ function SOSScreen() {
           }
         } catch (connectionCheckError) {
           console.warn('Error checking connection status:', connectionCheckError);
-          // Try to disconnect anyway
           try {
             await deviceToDisconnect.cancelConnection();
           } catch (forcedDisconnectError) {
@@ -438,32 +365,8 @@ function SOSScreen() {
         addLog(`Disconnection error: ${error.message}`);
         console.error('Disconnection error:', error);
         
-        // No need to reset state variables again as we did it at the beginning
-        
-        // Only show an alert for significant errors
         if (error.message !== 'Disconnect timeout') {
           Alert.alert('Disconnection Error', error.message);
-        }
-      } finally {
-        // Ensure the BLE manager is still scanning for devices if needed
-        if (isScanning && managerRef.current) {
-          addLog('Resuming scan after disconnection');
-          try {
-            managerRef.current.startDeviceScan(null, null, (error, device) => {
-              // Scan callback logic (simplified to avoid duplication)
-              if (!error && device?.name && 
-                  (device.name.includes('SOS') || device.name.includes('XIAO_SOS'))) {
-                setDevices(prev => {
-                  if (!prev.find(d => d.id === device.id)) {
-                    return [...prev, device];
-                  }
-                  return prev;
-                });
-              }
-            });
-          } catch (scanError) {
-            console.warn('Error resuming scan:', scanError);
-          }
         }
       }
     }
@@ -473,106 +376,133 @@ function SOSScreen() {
   const addLog = (message: string) => {
     try {
       const timestamp = new Date().toLocaleTimeString();
-      setLogs(prev => [{ timestamp, message }, ...prev].slice(0, 10));
+      setLogs(prev => [{ timestamp, message }, ...prev].slice(0, 15)); // Increased log history
     } catch (error) {
       console.error('Error adding log:', error);
     }
   };
 
-  // Handle button press from the device
-  const handleButtonPress = async (pressCount: number) => {
+  // Handle button press from the device - ALIGNED WITH YOUR BLE DEVICE CODES
+  const handleButtonPress = async (pressCount: number, emergencyCode: string, emergencyType: string) => {
     try {
       // Update last button press info
       const timestamp = new Date().toISOString();
       setLastButtonPress({
         pressCount,
+        emergencyCode,
         timestamp,
       });
       
-      // Log the button press
-      addLog(`SOS button pressed ${pressCount} time(s)`);
+      // Set alert message for UI
+      setAlertMessage(`🚨 ${emergencyType} Alert Received (Code: ${emergencyCode})`);
       
-      // Determine emergency type based on press count
-      let emergencyType = '';
+      // Log the button press
+      addLog(`SOS Alert: ${emergencyType} (${emergencyCode}) - ${pressCount} press(es)`);
+      
+      // Map emergency codes to appropriate services
+      let serviceType = '';
       let phoneNumber = '';
       
-      switch (pressCount) {
-        case 1:
-          emergencyType = 'Police';
+      switch (emergencyCode) {
+        case "100":
+          serviceType = 'Police';
           phoneNumber = '100';
           break;
-        case 2:
-          emergencyType = 'Medical';
+        case "108":
+          serviceType = 'Medical';
           phoneNumber = '108';
           break;
-        case 3:
-          emergencyType = 'National Emergency';
+        case "112":
+          serviceType = 'National Emergency';
           phoneNumber = '112';
           break;
         default:
-          emergencyType = 'General';
+          serviceType = 'General Emergency';
           phoneNumber = '112';
       }
       
       // Show confirmation dialog
       Alert.alert(
-        'Emergency Alert Received',
-        `The SOS button was pressed ${pressCount} time(s), indicating a ${emergencyType} emergency. Do you want to send an alert?`,
+        'Emergency Alert Detected',
+        `SOS Device sent: ${emergencyType} (Code: ${emergencyCode})\n\nThis indicates a ${serviceType} emergency. Do you want to send the alert to emergency services?`,
         [
           {
             text: 'Cancel',
             style: 'cancel',
             onPress: () => {
-              addLog(`${emergencyType} emergency cancelled by user`);
+              addLog(`${serviceType} emergency alert cancelled by user`);
+              setAlertMessage(`⚠️ ${emergencyType} alert cancelled`);
             }
           },
           {
             text: 'Send Alert',
             style: 'destructive',
             onPress: async () => {
-              // Get current location
-              const location = await getLocationAsync();
-              
-              // Send alert to emergency contact with location
-              if (location) {
-                sendEmergencyAlert({
-                  type: emergencyType,
-                  location: {
+              try {
+                // Get current location
+                addLog('Getting current location for emergency alert...');
+                const location = await getLocationAsync();
+                
+                // Prepare alert data
+                const alertData = {
+                  type: serviceType,
+                  emergencyCode: emergencyCode,
+                  phoneNumber: phoneNumber,
+                  timestamp: new Date().toISOString(),
+                  deviceId: connectedDevice?.id,
+                  deviceName: connectedDevice?.name || 'XIAO_SOS',
+                };
+                
+                // Add location if available
+                if (location) {
+                  alertData.location = {
                     latitude: location.coords.latitude,
                     longitude: location.coords.longitude,
-                  },
-                  timestamp: new Date().toISOString(),
-                });
-                addLog('Emergency alert sent with location data');
-              } else {
-                sendEmergencyAlert({
-                  type: emergencyType,
-                  timestamp: new Date().toISOString(),
-                });
-                addLog('Emergency alert sent without location data');
+                  };
+                  addLog('Emergency alert prepared with location data');
+                } else {
+                  addLog('Emergency alert prepared without location data');
+                }
+                
+                // Send emergency alert
+                await sendEmergencyAlert(alertData);
+                addLog(`${serviceType} emergency alert sent successfully`);
+                
+                // Update UI
+                setAlertMessage(`✅ ${emergencyType} alert sent to emergency services`);
+                
+                // Show confirmation
+                Alert.alert(
+                  'Alert Sent Successfully',
+                  `${serviceType} emergency alert has been sent to emergency services (${phoneNumber}).\n\nEmergency responders will be notified of your location and situation.`,
+                  [{ text: 'OK' }]
+                );
+              } catch (alertError) {
+                console.error('Error sending emergency alert:', alertError);
+                addLog(`Error sending emergency alert: ${alertError.message}`);
+                
+                Alert.alert(
+                  'Alert Error',
+                  `Failed to send emergency alert: ${alertError.message}\n\nPlease manually call ${phoneNumber} for immediate assistance.`,
+                  [{ text: 'OK' }]
+                );
               }
-              
-              // Show confirmation to user
-              Alert.alert(
-                'Alert Sent',
-                `${emergencyType} emergency alert has been sent. Emergency services will be notified.`,
-                [{ text: 'OK' }]
-              );
             }
           }
         ],
         { cancelable: false }
       );
     } catch (error) {
-      addLog(`Error handling button press: ${error.message}`);
-      Alert.alert('Error', 'Failed to process emergency button press');
+      console.error('Error handling button press:', error);
+      addLog(`Error handling SOS button press: ${error.message}`);
+      Alert.alert('Error', 'Failed to process emergency button press. Please manually call emergency services if needed.');
     }
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.title}>SOS Device Connection</Text>
+        <Text style={styles.title}>SOS Device Monitor</Text>
         <View style={[
           styles.statusIndicator, 
           { backgroundColor: connectedDevice ? Colors.success : Colors.error }
@@ -584,13 +514,13 @@ function SOSScreen() {
       </View>
 
       <View style={styles.deviceSection}>
-        <Text style={styles.sectionTitle}>BLE SOS Button</Text>
+        <Text style={styles.sectionTitle}>XIAO ESP32C3 SOS Button</Text>
         
         {connectedDevice ? (
           <Animated.View style={[styles.deviceInfoContainer, animatedStyle]}>
             <View style={styles.deviceHeader}>
               <Bluetooth size={24} color={Colors.primary} />
-              <Text style={styles.deviceName}>{connectedDevice.name || 'SOS Device'}</Text>
+              <Text style={styles.deviceName}>{connectedDevice.name || 'XIAO_SOS'}</Text>
             </View>
             
             <View style={styles.deviceDetails}>
@@ -599,18 +529,17 @@ function SOSScreen() {
                 <Text style={styles.deviceDetailValue}>{connectedDevice.id}</Text>
               </View>
               
-              {batteryLevel !== null && (
-                <View style={styles.deviceDetail}>
-                  <Text style={styles.deviceDetailLabel}>Battery:</Text>
-                  <View style={styles.batteryContainer}>
-                    <Battery size={16} color={
-                      batteryLevel > 50 ? Colors.success : 
-                      batteryLevel > 20 ? Colors.warning : Colors.error
-                    } />
-                    <Text style={styles.deviceDetailValue}>{batteryLevel}%</Text>
-                  </View>
-                </View>
-              )}
+              <View style={styles.deviceDetail}>
+                <Text style={styles.deviceDetailLabel}>Service:</Text>
+                <Text style={styles.deviceDetailValue}>Battery Service (0x180F)</Text>
+              </View>
+              
+              <View style={styles.deviceDetail}>
+                <Text style={styles.deviceDetailLabel}>Status:</Text>
+                <Text style={[styles.deviceDetailValue, { color: Colors.success }]}>
+                  Monitoring Emergency Signals
+                </Text>
+              </View>
               
               {alertMessage && (
                 <View style={styles.alertMessageContainer}>
@@ -629,19 +558,20 @@ function SOSScreen() {
         ) : (
           <View style={styles.noDeviceContainer}>
             <Text style={styles.instruction}>
-              Connect to a physical SOS button device via Bluetooth to enable emergency alerts.
+              Connect to your XIAO ESP32C3 SOS button device via Bluetooth to enable emergency monitoring.
             </Text>
             
             <View style={styles.pressInstructions}>
-              <Text style={styles.pressInstruction}>• Press 1x: Police (100)</Text>
-              <Text style={styles.pressInstruction}>• Press 2x: Medical (108)</Text>
-              <Text style={styles.pressInstruction}>• Press 3x: National Emergency (112)</Text>
+              <Text style={styles.pressInstructionTitle}>Emergency Codes:</Text>
+              <Text style={styles.pressInstruction}>• 1 Press → Police (Code: 100)</Text>
+              <Text style={styles.pressInstruction}>• 2 Presses → Medical (Code: 108)</Text>
+              <Text style={styles.pressInstruction}>• 3 Presses → National Emergency (Code: 112)</Text>
             </View>
             
             {isScanning ? (
               <View style={styles.scanningContainer}>
                 <ActivityIndicator size="large" color={Colors.primary} />
-                <Text style={styles.scanningText}>Scanning for devices...</Text>
+                <Text style={styles.scanningText}>Scanning for XIAO_SOS devices...</Text>
               </View>
             ) : (
               <TouchableOpacity 
@@ -656,14 +586,14 @@ function SOSScreen() {
             
             {devices.length > 0 && (
               <View style={styles.deviceList}>
-                <Text style={styles.deviceListTitle}>Available Devices:</Text>
+                <Text style={styles.deviceListTitle}>Available SOS Devices:</Text>
                 <FlatList
                   data={devices}
                   keyExtractor={(item) => item.id}
                   renderItem={({ item }) => (
                     <View style={styles.deviceItem}>
                       <View style={styles.deviceItemInfo}>
-                        <Text style={styles.deviceItemName}>{item.name || 'Unnamed Device'}</Text>
+                        <Text style={styles.deviceItemName}>{item.name || 'XIAO_SOS Device'}</Text>
                         <Text style={styles.deviceItemId}>ID: {item.id}</Text>
                       </View>
                       <TouchableOpacity
@@ -684,14 +614,28 @@ function SOSScreen() {
       
       {lastButtonPress && (
         <View style={styles.lastActionContainer}>
-          <Text style={styles.lastActionTitle}>Last Button Press</Text>
+          <Text style={styles.lastActionTitle}>Last Emergency Signal</Text>
           <Text style={styles.lastActionText}>
-            Pressed {lastButtonPress.pressCount} time(s) at {new Date(lastButtonPress.timestamp).toLocaleTimeString()}
+            Code: {lastButtonPress.emergencyCode} ({lastButtonPress.pressCount} press{lastButtonPress.pressCount !== 1 ? 'es' : ''})
+          </Text>
+          <Text style={styles.lastActionTime}>
+            Received: {new Date(lastButtonPress.timestamp).toLocaleString()}
           </Text>
         </View>
       )}
 
-
+      <View style={styles.logContainer}>
+        <Text style={styles.logTitle}>Activity Log</Text>
+        {logs.length > 0 ? (
+          logs.map((log, index) => (
+            <Text key={index} style={styles.logEntry}>
+              [{log.timestamp}] {log.message}
+            </Text>
+          ))
+        ) : (
+          <Text style={styles.noLogsText}>No activity yet...</Text>
+        )}
+      </View>
     </SafeAreaView>
   );
 }
@@ -770,29 +714,28 @@ const styles = StyleSheet.create({
   deviceDetail: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 12,
   },
   deviceDetailLabel: {
     fontFamily: 'Inter-Medium',
     color: Colors.textSecondary,
+    fontSize: 14,
   },
   deviceDetailValue: {
     fontFamily: 'Inter-Regular',
     color: Colors.textPrimary,
-  },
-  batteryContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    fontSize: 14,
   },
   disconnectButton: {
     backgroundColor: Colors.error,
-    paddingVertical: 8,
+    paddingVertical: 12,
     borderRadius: 8,
     alignItems: 'center',
   },
   disconnectText: {
     fontFamily: 'Inter-Medium',
     color: Colors.white,
+    fontSize: 16,
   },
   noDeviceContainer: {
     alignItems: 'center',
@@ -803,41 +746,52 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter-Regular',
     color: Colors.textPrimary,
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: 20,
+    lineHeight: 22,
   },
   pressInstructions: {
     marginBottom: 24,
     alignSelf: 'flex-start',
+    width: '100%',
+  },
+  pressInstructionTitle: {
+    fontFamily: 'Inter-Bold',
+    color: Colors.textPrimary,
+    marginBottom: 12,
+    fontSize: 16,
   },
   pressInstruction: {
     fontFamily: 'Inter-Regular',
     color: Colors.textPrimary,
     marginBottom: 8,
+    fontSize: 14,
   },
   scanningContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
+    padding: 20,
   },
   scanningText: {
     fontFamily: 'Inter-Medium',
     color: Colors.primary,
-    marginTop: 8,
+    marginTop: 12,
+    fontSize: 16,
   },
   scanButton: {
     backgroundColor: Colors.primary,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
+    paddingVertical: 14,
+    paddingHorizontal: 28,
     borderRadius: 8,
-    marginTop: 8,
+    marginTop: 12,
   },
   scanButtonText: {
     fontFamily: 'Inter-Medium',
     color: Colors.white,
     marginLeft: 8,
+    fontSize: 16,
   },
   lastActionContainer: {
     backgroundColor: Colors.primaryLight,
@@ -851,28 +805,51 @@ const styles = StyleSheet.create({
   lastActionTitle: {
     fontFamily: 'Inter-Bold',
     color: Colors.primary,
-    marginBottom: 4,
+    marginBottom: 6,
+    fontSize: 16,
   },
   lastActionText: {
     fontFamily: 'Inter-Medium',
     color: Colors.textPrimary,
+    fontSize: 14,
   },
-
-  reconnectButton: {
-    backgroundColor: Colors.primary,
-    marginHorizontal: 16,
-    marginBottom: 16,
-    paddingVertical: 12,
+  lastActionTime: {
+    fontFamily: 'Inter-Regular',
+    color: Colors.textSecondary,
+    fontSize: 12,
+    marginTop: 4,
+  },
+  logContainer: {
+    flex: 1,
+    backgroundColor: Colors.white,
+    margin: 16,
+    padding: 16,
     borderRadius: 8,
-    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
-  reconnectText: {
-    fontFamily: 'Inter-Medium',
-    color: Colors.white,
+  logTitle: {
+    fontFamily: 'Inter-Bold',
+    fontSize: 16,
+    color: Colors.textPrimary,
+    marginBottom: 12,
   },
-  // New styles for BLE device list
+  logEntry: {
+    fontFamily: 'Inter-Regular',
+    fontSize: 12,
+    color: Colors.textSecondary,
+    marginBottom: 6,
+    lineHeight: 16,
+  },
+  noLogsText: {
+    fontFamily: 'Inter-Regular',
+    fontSize: 14,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginTop: 20,
+  },
   deviceList: {
-    marginTop: 16,
+    marginTop: 20,
     width: '100%',
     borderTopWidth: 1,
     borderTopColor: Colors.border,
@@ -881,55 +858,4 @@ const styles = StyleSheet.create({
   deviceListTitle: {
     fontFamily: 'Inter-Bold',
     fontSize: 16,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  flatList: {
-    maxHeight: 200,
-  },
-  deviceItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  deviceItemInfo: {
-    flex: 1,
-  },
-  deviceItemName: {
-    fontFamily: 'Inter-Medium',
-    fontSize: 14,
-    color: Colors.textPrimary,
-  },
-  deviceItemId: {
-    fontFamily: 'Inter-Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  connectButton: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-  },
-  connectButtonText: {
-    fontFamily: 'Inter-Medium',
-    fontSize: 12,
-    color: Colors.white,
-  },
-  // Alert message container
-  alertMessageContainer: {
-    marginTop: 8,
-    padding: 8,
-    backgroundColor: Colors.errorLight,
-    borderRadius: 6,
-    borderLeftWidth: 4,
-    borderLeftColor: Colors.error,
-  },
-  alertMessageText: {
-    fontFamily: 'Inter-Medium',
-    color: Colors.error,
-  },
-});
+    color

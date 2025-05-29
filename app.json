@@ -23,16 +23,13 @@
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
-        "INTERNET",
-        "BLUETOOTH",
-        "BLUETOOTH_ADMIN",
-        "BLUETOOTH_SCAN",
-        "BLUETOOTH_CONNECT",
-        "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION",
+        "android.permission.INTERNET",
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",
-        "android.permission.BLUETOOTH_CONNECT"
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ],
       "package": "com.sdehire.wowtestapp"
     },
@@ -54,8 +51,15 @@
       ],
       "expo-font",
       "expo-web-browser",
-      "react-native-ble-manager",
-      "react-native-ble-plx"
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": true,
+          "modes": ["peripheral", "central"],
+          "bluetoothAlwaysPermission": "Allow this app to connect to Bluetooth devices for emergency services"
+        }
+      ],
+      "react-native-ble-manager"
     ],
     "experiments": {
       "typedRoutes": true
@@ -63,7 +67,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "90880f37-9ba7-400b-9bc8-22cd2c952ac4"
+        "projectId": "c009542f-fbed-4af2-8c7c-d4102edfce5f"
       }
     }
   }
