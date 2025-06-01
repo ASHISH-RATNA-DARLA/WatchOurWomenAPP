@@ -1,20 +1,29 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ActivityIndicator } from 'react-native';
-import { ShoppingBag, Info } from 'lucide-react-native';
-import Colors from '@/constants/Colors';
 import ImageWithFallback from '@/components/ui/ImageWithFallback';
+import Colors from '@/constants/Colors';
+import { BookOpen, Info, ShoppingBag } from 'lucide-react-native';
+import React, { useState } from 'react';
+import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 interface SafetyGearCardProps {
   title: string;
   image: string;
   description?: string;
   onPress?: () => void;
+  isManual?: boolean;
+  onOpenManual?: () => void;
 }
 
 const { width } = Dimensions.get('window');
 const cardWidth = (width - 48) / 2; // 2 cards per row with margins
 
-export default function SafetyGearCard({ title, image, description, onPress }: SafetyGearCardProps) {
+export default function SafetyGearCard({ 
+  title, 
+  image, 
+  description, 
+  onPress, 
+  isManual = false, 
+  onOpenManual 
+}: SafetyGearCardProps) {
   const [showInfo, setShowInfo] = useState(false);
   
   const handlePress = () => {
@@ -28,6 +37,13 @@ export default function SafetyGearCard({ title, image, description, onPress }: S
   const toggleInfo = (e) => {
     e.stopPropagation();
     setShowInfo(!showInfo);
+  };
+
+  const handleOpenManual = (e) => {
+    e.stopPropagation();
+    if (onOpenManual) {
+      onOpenManual();
+    }
   };
   
   return (
@@ -60,10 +76,21 @@ export default function SafetyGearCard({ title, image, description, onPress }: S
       ) : (
         <View style={styles.contentContainer}>
           <Text style={styles.title}>{title}</Text>
-          <View style={styles.orderButton}>
-            <ShoppingBag size={14} color={Colors.white} />
-            <Text style={styles.orderText}>Quick Buy</Text>
-          </View>
+          
+          {isManual ? (
+            <TouchableOpacity 
+              style={[styles.orderButton, styles.manualButton]}
+              onPress={handleOpenManual}
+            >
+              <BookOpen size={14} color={Colors.white} />
+              <Text style={styles.orderText}>Open</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.orderButton}>
+              <ShoppingBag size={14} color={Colors.white} />
+              <Text style={styles.orderText}>Quick Buy</Text>
+            </View>
+          )}
         </View>
       )}
     </TouchableOpacity>
@@ -113,6 +140,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 4,
     alignSelf: 'flex-start',
+  },
+  manualButton: {
+    backgroundColor: Colors.primary,
   },
   orderText: {
     marginLeft: 4,

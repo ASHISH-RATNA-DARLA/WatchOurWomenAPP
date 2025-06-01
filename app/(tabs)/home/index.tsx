@@ -1,8 +1,11 @@
 import BatteryMonitor from '@/components/home/BatteryMonitor';
+import DefenseManualViewer from '@/components/home/DefenseManualViewer';
 import EmergencyButton from '@/components/home/EmergencyButton';
 import SafetyGearCard from '@/components/home/SafetyGearCard';
 import TravelingStatus from '@/components/home/TravelingStatus';
 import Colors from '@/constants/Colors';
+import BatteryService from '@/services/battery';
+import ContentService from '@/services/content';
 import { getLocationAsync } from '@/services/location';
 import { Shield } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
@@ -17,19 +20,71 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function HomeScreen() {
   const [isTraveling, setIsTraveling] = useState(false);
-  const [battery, setBattery] = useState(100);
+  const [battery, setBattery] = useState<number | null>(null);
+  const [isCharging, setIsCharging] = useState(false);
+  const [batteryError, setBatteryError] = useState<string | null>(null);
+  const [isManualVisible, setIsManualVisible] = useState(false);
   
-  // Simulated data - would come from battery API in real app
+  // Use our custom battery service with real device data
   useEffect(() => {
-    // Simulating battery level
-    setBattery(Math.floor(Math.random() * 100));
+    let batteryLevelSubscription: { remove: () => void } | null = null;
+    let chargingStateSubscription: { remove: () => void } | null = null;
     
-    const intervalId = setInterval(() => {
-      const newLevel = Math.floor(Math.random() * 100);
-      setBattery(newLevel);
-    }, 30000); // Update every 30 seconds for demo purposes
+    // Function to get battery level and charging status
+    const getBatteryInfo = async () => {
+      try {
+        // Get real battery data from the device
+        const level = await BatteryService.getBatteryLevel();
+        const charging = await BatteryService.isBatteryCharging();
+        
+        setBattery(level);
+        setIsCharging(charging);
+        setBatteryError(null);
+        
+        console.log(`Battery level: ${level}%, Charging: ${charging}`);
+      } catch (error) {
+        console.error('Error getting battery info:', error);
+        setBatteryError('Unable to fetch battery data');
+      }
+    };
     
-    return () => clearInterval(intervalId);
+    // Initial fetch
+    getBatteryInfo();
+    
+    // Set up listeners for real-time updates
+    try {
+      batteryLevelSubscription = BatteryService.addBatteryLevelListener((newLevel) => {
+        setBattery(newLevel);
+        setBatteryError(null);
+        console.log(`Battery level changed: ${newLevel}%`);
+      });
+      
+      chargingStateSubscription = BatteryService.addChargingStateListener((charging) => {
+        setIsCharging(charging);
+        console.log(`Charging state changed: ${charging}`);
+      });
+    } catch (error) {
+      console.error('Error setting up battery listeners:', error);
+      setBatteryError('Unable to monitor battery status');
+    }
+    
+    // Fallback polling every 30 seconds in case listeners don't work
+    const intervalId = setInterval(getBatteryInfo, 30000);
+    
+    // Clean up function
+    return () => {
+      // Remove battery listeners
+      if (batteryLevelSubscription) {
+        batteryLevelSubscription.remove();
+      }
+      
+      if (chargingStateSubscription) {
+        chargingStateSubscription.remove();
+      }
+      
+      // Clear interval
+      clearInterval(intervalId);
+    };
   }, []);
 
   // Simulate location tracking when traveling
@@ -113,13 +168,21 @@ export default function HomeScreen() {
             title="Defense Manual"
             image="https://images.pexels.com/photos/256450/pexels-photo-256450.jpeg"
             description="Comprehensive guide to self-defense techniques for women."
+            isManual={true}
+            onOpenManual={() => setIsManualVisible(true)}
           />
         </View>
 
-        <BatteryMonitor level={battery} />
+        <BatteryMonitor level={battery} isCharging={isCharging} error={batteryError} />
       </ScrollView>
 
       <EmergencyButton />
+      
+      {/* Defense Manual Viewer Modal */}
+      <DefenseManualViewer 
+        isVisible={isManualVisible} 
+        onClose={() => setIsManualVisible(false)} 
+      />
     </SafeAreaView>
   );
 }

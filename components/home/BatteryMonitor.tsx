@@ -1,13 +1,33 @@
+  import Colors from '@/constants/Colors';
+import { AlertCircle, Battery, BatteryCharging, BatteryWarning } from 'lucide-react-native';
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { Battery, BatteryWarning } from 'lucide-react-native';
-import Colors from '@/constants/Colors';
+import { StyleSheet, Text, View } from 'react-native';
 
 interface BatteryMonitorProps {
-  level: number;
+  level: number | null;
+  isCharging?: boolean;
+  error?: string | null;
 }
 
-export default function BatteryMonitor({ level }: BatteryMonitorProps) {
+export default function BatteryMonitor({ level, isCharging = false, error = null }: BatteryMonitorProps) {
+  // Handle error state
+  if (error || level === null) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.headerContainer}>
+          <AlertCircle size={24} color={Colors.error} />
+          <Text style={styles.title}>Battery Status</Text>
+        </View>
+        
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>
+            {error || "Unable to fetch battery data"}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
   // Determine color based on battery level
   const getBatteryColor = () => {
     if (level <= 10) return Colors.error;
@@ -15,20 +35,23 @@ export default function BatteryMonitor({ level }: BatteryMonitorProps) {
     return Colors.success;
   };
 
-  // Determine icon based on battery level
+  // Determine icon based on battery level and charging status
   const getBatteryIcon = () => {
-    if (level <= 10) {
+    if (isCharging) {
+      return <BatteryCharging size={24} color={Colors.success} />;
+    } else if (level <= 10) {
       return <BatteryWarning size={24} color={Colors.error} />;
     }
     return <Battery size={24} color={getBatteryColor()} />;
   };
 
-  // Get warning message based on battery level
+  // Get warning message based on battery level and charging status
   const getWarningMessage = () => {
-    if (level <= 10) {
+    if (isCharging) {
+      return level <= 25 ? 'Battery is charging. Keep connected until fully charged.' : null;
+    } else if (level <= 10) {
       return 'Battery critically low. Emergency contacts notified.';
-    }
-    if (level <= 25) {
+    } else if (level <= 25) {
       return 'Battery low. Consider charging soon.';
     }
     return null;
@@ -50,24 +73,37 @@ export default function BatteryMonitor({ level }: BatteryMonitorProps) {
               styles.levelBar, 
               { 
                 width: `${level}%`, 
-                backgroundColor: getBatteryColor() 
+                backgroundColor: isCharging ? Colors.success : getBatteryColor() 
               }
             ]} 
           />
         </View>
-        <Text style={[styles.levelText, { color: getBatteryColor() }]}>
-          {level}%
-        </Text>
+        <View style={styles.statusContainer}>
+          <Text style={[styles.levelText, { color: isCharging ? Colors.success : getBatteryColor() }]}>
+            {level}%
+          </Text>
+          {isCharging && (
+            <Text style={styles.chargingText}>Charging</Text>
+          )}
+        </View>
       </View>
       
       {warningMessage && (
         <View style={[
           styles.warningContainer, 
-          { backgroundColor: level <= 10 ? Colors.errorLight : Colors.warningLight }
+          { 
+            backgroundColor: isCharging ? Colors.successLight : 
+                            level <= 10 ? Colors.errorLight : 
+                            Colors.warningLight 
+          }
         ]}>
           <Text style={[
             styles.warningText,
-            { color: level <= 10 ? Colors.error : Colors.warning }
+            { 
+              color: isCharging ? Colors.success : 
+                     level <= 10 ? Colors.error : 
+                     Colors.warning 
+            }
           ]}>
             {warningMessage}
           </Text>
@@ -117,11 +153,21 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 5,
   },
+  statusContainer: {
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    minWidth: 70,
+  },
   levelText: {
     fontFamily: 'Inter-Bold',
     fontSize: 14,
-    width: 40,
     textAlign: 'right',
+  },
+  chargingText: {
+    fontFamily: 'Inter-Medium',
+    fontSize: 12,
+    color: Colors.success,
+    marginTop: 2,
   },
   warningContainer: {
     padding: 8,
@@ -131,5 +177,18 @@ const styles = StyleSheet.create({
   warningText: {
     fontFamily: 'Inter-Medium',
     fontSize: 12,
+  },
+  errorContainer: {
+    backgroundColor: Colors.errorLight,
+    padding: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  errorText: {
+    fontFamily: 'Inter-Medium',
+    fontSize: 14,
+    color: Colors.error,
+    textAlign: 'center',
   },
 });

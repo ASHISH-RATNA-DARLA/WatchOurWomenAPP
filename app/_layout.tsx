@@ -1,5 +1,7 @@
+// Import the patch first to ensure I18nManager is fixed before any React Navigation imports
 import { AuthProvider } from '@/contexts/AuthContext';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
+import '@/patches/react-navigation-fix';
 import { Inter_400Regular, Inter_500Medium, Inter_700Bold } from '@expo-google-fonts/inter';
 import { useFonts } from 'expo-font';
 import { SplashScreen, Stack } from 'expo-router';
